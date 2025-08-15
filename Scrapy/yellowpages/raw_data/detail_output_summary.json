@@ -1,0 +1,14 @@
+{
+  "run_id": "yellowpages-20250813T174253Z",
+  "start_time_utc": "2025-08-13T17:42:53.180758",
+  "end_time_utc": "2025-08-13T17:46:11.508112",
+  "elapsed_seconds": 198.327354,
+  "elapsed_minutes": 3.3054559,
+  "total_requests": 0,
+  "total_responses": 97,
+  "total_items_scraped": 9198,
+  "duplicate_items": 6238,
+  "saved_items": 2960,
+  "errors": 0,
+  "notes": "finished"
+}
