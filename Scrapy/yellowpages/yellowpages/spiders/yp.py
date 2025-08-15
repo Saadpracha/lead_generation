@@ -204,33 +204,33 @@ class YellowpagesSpider(scrapy.Spider):
 
     from datetime import timedelta
 
-    def closed(self, reason):
-        end_time = datetime.utcnow()
-        elapsed_time = end_time - self.start_time
+def closed(self, reason):
+    end_time = datetime.utcnow()
+    elapsed_time = end_time - self.start_time
 
-        # Format the start and end times to a more user-friendly format (YYYY-MM-DD HH:MM:SS)
-        formatted_start_time = self.start_time.strftime("%Y-%m-%d %H:%M:%S")
-        formatted_end_time = end_time.strftime("%Y-%m-%d %H:%M:%S")
 
-        # Elapsed time in seconds and minutes
-        elapsed_seconds = int(elapsed_time.total_seconds())
-        elapsed_minutes = elapsed_seconds // 60  # Integer division to avoid floating-point values
+    formatted_start_time = self.start_time.strftime("%Y-%m-%d %H:%M:%S")
+    formatted_end_time = end_time.strftime("%Y-%m-%d %H:%M:%S")
 
-        # Create summary data
-        summary_data = {
-            "run_id": self.run_id,
-            "start_time_utc": formatted_start_time,
-            "end_time_utc": formatted_end_time,
-            "elapsed_seconds": elapsed_seconds,
-            "elapsed_minutes": elapsed_minutes,
-            "total_responses": self.total_responses,
-            "total_items_scraped": self.total_items_scraped + self.duplicate_items,
-            "duplicate_items": self.duplicate_items,
-            "saved_items": self.total_items_scraped,
-            "errors": self.errors,
-            "notes": reason,
-        }
+    # Elapsed time in seconds and minutes
+    elapsed_seconds = int(elapsed_time.total_seconds())
+    elapsed_minutes = elapsed_seconds // 60  
 
-        # Save summary to file
-        with open(self.summary_file, "w", encoding="utf-8") as f:
-            json.dump(summary_data, f, indent=2, ensure_ascii=False)
+    # Create summary data
+    summary_data = {
+        "run_id": self.run_id,
+        "start_time_utc": formatted_start_time,
+        "end_time_utc": formatted_end_time,
+        "elapsed_seconds": elapsed_seconds,
+        "elapsed_minutes": elapsed_minutes,
+        "total_responses": self.total_responses,
+        "total_items_scraped": self.total_items_scraped + self.duplicate_items,
+        "duplicate_items": self.duplicate_items,
+        "saved_items": self.total_items_scraped,
+        "errors": self.errors,
+        "notes": reason,
+    }
+
+    # Save summary to file
+    with open(self.summary_file, "w", encoding="utf-8") as f:
+        json.dump(summary_data, f, indent=2, ensure_ascii=False)
