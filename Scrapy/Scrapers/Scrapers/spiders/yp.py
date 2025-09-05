@@ -1,3 +1,4 @@
+# Scrapers/spiders/yp.py
 import os
 import re
 import json
@@ -8,7 +9,15 @@ from datetime import datetime
 import scrapy
 from scrapy import Request
 
+
 class YellowpagesSpider(scrapy.Spider):
+    """
+    Yellowpages Canada spider (cleaned).
+    Responsibilities:
+      - Read what/where inputs
+      - Build requests and parse listing results
+      - Yield items (CSV pipeline handles persistence & summary)
+    """
     name = "yellowpages_canada"
     allowed_domains = ["yellowpages.ca"]
     BASE = "https://www.yellowpages.ca"
@@ -19,18 +28,22 @@ class YellowpagesSpider(scrapy.Spider):
 
     @classmethod
     def from_crawler(cls, crawler, *args, **kwargs):
+        # Let Scrapy create the spider (this calls __init__ first)
         spider = super().from_crawler(crawler, *args, **kwargs)
-        # NEW: Store crawler in spider instance
+
+        # Attach crawler reference now (safe)
         spider.crawler = crawler
+
         # Disable feed exports (pipeline handles output)
         crawler.settings.set('FEEDS', {}, priority='spider')
         crawler.settings.set('FEED_EXPORT_ENABLED', False, priority='spider')
+
         return spider
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        # Required arguments
+        # Required arguments (passed with -a)
         what_file = kwargs.get("what")
         where_file = kwargs.get("where")
         self.dir_name = kwargs.get("dir_name")
@@ -47,7 +60,7 @@ class YellowpagesSpider(scrapy.Spider):
         self.source = kwargs.get("source", "")
         self.category_matching = kwargs.get("category_matching", "no").lower() == "yes"
 
-        # Output directory
+        # Output directory base mapping
         output_base_dirs = {
             "yellowpages_canada": os.path.join("imp_data", "YP_Canada", "output")
         }
@@ -61,15 +74,27 @@ class YellowpagesSpider(scrapy.Spider):
         self.output_file = os.path.join(self.output_dir, output_file)
         self.summary_file = os.path.join(self.output_dir, kwargs.get("summary", "summary.json"))
 
-        # S3 configuration using settings.py defaults
+        # S3 flags & preliminary values (do NOT access crawler.settings here)
         self.save_to_s3 = kwargs.get("save_to_s3", "no").lower() == "yes"
-        # NEW: Use self.crawler (now set in from_crawler)
-        self.s3_bucket = kwargs.get("s3_bucket", self.crawler.settings.get('S3_BUCKET', 'bucket-euvdfl'))
-        self.s3_region = kwargs.get("s3_region", self.crawler.settings.get('S3_REGION', 'ca-central-1'))
+        # Accept s3_bucket/s3_region from CLI if provided; pipeline will fill defaults if None
+        self.s3_bucket = kwargs.get("s3_bucket", None)
+        self.s3_region = kwargs.get("s3_region", None)
         self.s3_key = self.output_file.replace(os.sep, "/")
         self.s3_summary_key = self.summary_file.replace(os.sep, "/")
 
-        # Initialize state
+        # load inputs (what/where) from provided files
+        self.what_list = self.load_inputs(what_file)
+        self.where_list = self.load_inputs(where_file)
+        if not self.what_list:
+            raise ValueError(f"No entries loaded from what file: {what_file}")
+        if not self.where_list:
+            raise ValueError(f"No entries loaded from where file: {where_file}")
+
+        # load proxies if provided (expect -a proxy_file=path.json)
+        proxy_file = kwargs.get("proxy_file", None)
+        self.proxy_list = self.load_proxies(proxy_file) if proxy_file else []
+
+        # Initialize runtime state
         self.current_proxy_index = 0
         self.seen_listing_ids = set()
         self.total_items_scraped = 0
@@ -81,21 +106,22 @@ class YellowpagesSpider(scrapy.Spider):
         self.run_id = f"{self.name}-{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}"
         self.start_time = datetime.utcnow()
 
-        # Log output destination
+        # Log output destination (note: bucket may be filled later in pipeline)
         if self.save_to_s3:
             self.logger.info(f"Output will be saved to S3: s3://{self.s3_bucket}/{self.s3_key}")
         else:
             self.logger.info(f"Output file will be saved locally to: {self.output_file}")
 
-
+    # ---------- helpers ----------
     def load_inputs(self, filepath):
+        """Load a CSV or Excel where the column name is inferred from filename or fallback to the first non-index column."""
         if not os.path.exists(filepath):
             self.logger.warning("Input file not found: %s", filepath)
             return []
 
         if filepath.endswith(".csv"):
             df = pd.read_csv(filepath)
-        elif filepath.endswith(".xlsx"):
+        elif filepath.endswith(".xlsx") or filepath.endswith(".xls"):
             df = pd.read_excel(filepath)
         else:
             self.logger.error("Unsupported input file type: %s", filepath)
@@ -103,6 +129,7 @@ class YellowpagesSpider(scrapy.Spider):
 
         col = os.path.splitext(os.path.basename(filepath))[0]
         if col not in df.columns:
+            # fallback to first non-index column
             cols = [c for c in df.columns if c.lower() != "index"]
             if not cols:
                 return []
@@ -111,6 +138,7 @@ class YellowpagesSpider(scrapy.Spider):
         return df[col].dropna().astype(str).tolist()
 
     def load_proxies(self, proxy_file):
+        """Load proxies from a JSON file (list or dict). Expect entries like ip:port:user:pass or ip:port."""
         if not os.path.exists(proxy_file):
             self.logger.warning("Proxy file not found: %s — continuing without proxies", proxy_file)
             return []
@@ -119,6 +147,18 @@ class YellowpagesSpider(scrapy.Spider):
             raw = json.load(f)
             return raw if isinstance(raw, list) else list(raw.values())
 
+    def get_proxy_creds(self, index):
+        if not self.proxy_list:
+            return {"ip": "", "user": "", "pass": ""}
+
+        entry = self.proxy_list[index % len(self.proxy_list)]
+        parts = entry.split(":")
+        if len(parts) == 4:
+            ip, port, user, password = parts
+            return {"ip": f"{ip}:{port}", "user": user, "pass": password}
+        return {"ip": entry, "user": "", "pass": ""}
+
+    # ---------- request flow ----------
     def start_requests(self):
         for what in self.what_list:
             for where in self.where_list:
@@ -148,6 +188,7 @@ class YellowpagesSpider(scrapy.Spider):
                 headers["Proxy-Authorization"] = "Basic " + base64.b64encode(creds.encode()).decode()
             req_meta["proxy"] = f"http://{proxy['ip']}"
 
+        self.total_requests += 1
         yield Request(
             url,
             headers=headers,
@@ -157,21 +198,11 @@ class YellowpagesSpider(scrapy.Spider):
             dont_filter=True,
         )
 
-    def get_proxy_creds(self, index):
-        if not self.proxy_list:
-            return {"ip": "", "user": "", "pass": ""}
-
-        entry = self.proxy_list[index % len(self.proxy_list)]
-        parts = entry.split(":")
-        if len(parts) == 4:
-            ip, port, user, password = parts
-            return {"ip": f"{ip}:{port}", "user": user, "pass": password}
-        return {"ip": entry, "user": "", "pass": ""}
-
     def handle_error(self, failure):
         req = getattr(failure, "request", None)
         if not req:
             self.logger.error("Failure missing request: %s", failure)
+            self.errors += 1
             return
 
         if self.proxy_list:
@@ -184,7 +215,9 @@ class YellowpagesSpider(scrapy.Spider):
             yield from self.make_request(req.url, req.meta)
         else:
             self.logger.error("Request failed and no proxies available: %s", req.url)
+            self.errors += 1
 
+    # ---------- parsing ----------
     def parse(self, response):
         self.total_responses += 1
 
@@ -225,7 +258,7 @@ class YellowpagesSpider(scrapy.Spider):
             first_phone = phones[0] if phones else ""
             all_phones_csv = ",".join(phones)
 
-            # Deduplication
+            # Deduplication key
             if listing_id:
                 dedupe_key = f"id:{listing_id}"
             elif full_link:
@@ -301,40 +334,17 @@ class YellowpagesSpider(scrapy.Spider):
                 "source": self.source,
             }
 
+        # pagination
         next_page = response.xpath('//a[contains(text(), "Next")]/@href').get()
         if next_page:
             yield from self.make_request(urljoin(self.BASE, next_page), response.meta)
 
+    # ---------- cleanup (no file writes here; pipeline writes summary) ----------
     def closed(self, reason):
-        if reason == "finished":
-            end_time = datetime.utcnow()
-            elapsed = end_time - self.start_time
-            unique_count = len(self.seen_listing_ids)
-            total_encountered = unique_count + self.duplicate_items
-            original_items = total_encountered // 3
-            duplicate_items = original_items - unique_count
-
-            summary_data = {
-                "run_id": self.run_id,
-                "scraper_name": self.name,
-                "start_time_utc": self.start_time.strftime("%Y-%m-%d %H:%M:%S"),
-                "end_time_utc": end_time.strftime("%Y-%m-%d %H:%M:%S"),
-                "elapsed_seconds": int(elapsed.total_seconds()),
-                "elapsed_minutes": int(elapsed.total_seconds() // 60),
-                "total_encountered": original_items,
-                "unique_items": unique_count,
-                "duplicate_items": duplicate_items,              
-                "errors": self.errors,
-                "excluded_record_count": self.excluded_items,
-                "saved_items": unique_count - self.excluded_items,
-                "what_inputs": sorted(set(self.what_list)),
-                "where_inputs": sorted(set(self.where_list)),
-                "source": self.source,
-                "category_matching": "yes" if self.category_matching else "no",
-                "output_file": self.output_file,
-                "summary_file": self.summary_file,
-                "notes": reason,
-            }
-
-            with open(self.summary_file, "w", encoding="utf-8") as f:
-                json.dump(summary_data, f, indent=2, ensure_ascii=False)
+        end_time = datetime.utcnow()
+        elapsed = end_time - self.start_time
+        unique_count = len(self.seen_listing_ids)
+        self.logger.info(
+            "Scrape finished: reason=%s, run_id=%s, unique=%d, scraped=%d, duplicates=%d, excluded=%d, elapsed=%s",
+            reason, self.run_id, unique_count, self.total_items_scraped, self.duplicate_items, self.excluded_items, str(elapsed)
+        )
