@@ -8,8 +8,6 @@ from datetime import datetime
 import scrapy
 from scrapy import Request
 
-
-
 class YellowpagesSpider(scrapy.Spider):
     name = "yellowpages_canada"
     allowed_domains = ["yellowpages.ca"]
@@ -22,6 +20,9 @@ class YellowpagesSpider(scrapy.Spider):
     @classmethod
     def from_crawler(cls, crawler, *args, **kwargs):
         spider = super().from_crawler(crawler, *args, **kwargs)
+        # NEW: Store crawler in spider instance
+        spider.crawler = crawler
+        # Disable feed exports (pipeline handles output)
         crawler.settings.set('FEEDS', {}, priority='spider')
         crawler.settings.set('FEED_EXPORT_ENABLED', False, priority='spider')
         return spider
@@ -29,7 +30,7 @@ class YellowpagesSpider(scrapy.Spider):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        # Required arguments (unchanged)
+        # Required arguments
         what_file = kwargs.get("what")
         where_file = kwargs.get("where")
         self.dir_name = kwargs.get("dir_name")
@@ -42,11 +43,11 @@ class YellowpagesSpider(scrapy.Spider):
         if not output_file.endswith('.csv'):
             raise ValueError("Output file must have a .csv extension")
 
-        # Optional arguments (unchanged)
+        # Optional arguments
         self.source = kwargs.get("source", "")
         self.category_matching = kwargs.get("category_matching", "no").lower() == "yes"
 
-        # Output directory (unchanged)
+        # Output directory
         output_base_dirs = {
             "yellowpages_canada": os.path.join("imp_data", "YP_Canada", "output")
         }
@@ -54,7 +55,7 @@ class YellowpagesSpider(scrapy.Spider):
         if not base_dir:
             raise ValueError(f"No output directory configured for spider '{self.name}'")
 
-        # Construct output paths (unchanged)
+        # Construct output paths
         self.output_dir = os.path.join(base_dir, self.dir_name)
         os.makedirs(self.output_dir, exist_ok=True)
         self.output_file = os.path.join(self.output_dir, output_file)
@@ -62,12 +63,13 @@ class YellowpagesSpider(scrapy.Spider):
 
         # S3 configuration using settings.py defaults
         self.save_to_s3 = kwargs.get("save_to_s3", "no").lower() == "yes"
+        # NEW: Use self.crawler (now set in from_crawler)
         self.s3_bucket = kwargs.get("s3_bucket", self.crawler.settings.get('S3_BUCKET', 'bucket-euvdfl'))
         self.s3_region = kwargs.get("s3_region", self.crawler.settings.get('S3_REGION', 'ca-central-1'))
         self.s3_key = self.output_file.replace(os.sep, "/")
         self.s3_summary_key = self.summary_file.replace(os.sep, "/")
 
-        # Initialize state (unchanged)
+        # Initialize state
         self.current_proxy_index = 0
         self.seen_listing_ids = set()
         self.total_items_scraped = 0

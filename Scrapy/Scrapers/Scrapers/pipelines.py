@@ -10,7 +10,6 @@ class YellowpagesPipeline:
     def process_item(self, item, spider):
         return item
 
-
 class S3OrLocalCsvPipeline:
     def __init__(self, save_to_s3, s3_bucket, s3_region, output_file, summary_file, s3_key, s3_summary_key):
         self.save_to_s3 = save_to_s3
@@ -20,7 +19,7 @@ class S3OrLocalCsvPipeline:
         self.summary_file = summary_file
         self.s3_key = s3_key
         self.s3_summary_key = s3_summary_key
-        self.items = []  # Store items for summary stats
+        self.items = []
         self.start_time = datetime.utcnow()
 
     @classmethod
@@ -43,16 +42,7 @@ class S3OrLocalCsvPipeline:
         else:
             os.makedirs(os.path.dirname(self.output_file), exist_ok=True)
             self.file = open(self.output_file, 'wb')
-        # Use custom exporter if needed, else default
-        self.exporter = CsvItemExporter(
-            self.file,
-            encoding='utf-8-sig',
-            include_headers_line=True,
-            errors='replace'
-        )
-        # If you need Utf8BomCsvItemExporter, uncomment below and adjust import
-        # from Scrapers.exporters import Utf8BomCsvItemExporter
-        # self.exporter = Utf8BomCsvItemExporter(self.file)
+        self.exporter = Utf8BomCsvItemExporter(self.file)
         self.exporter.start_exporting()
 
     def process_item(self, item, spider):
