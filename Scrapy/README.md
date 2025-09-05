@@ -1,173 +1,159 @@
-This Project uses the Scrapy framework for Data Extraction. 
-Things to Remeber for now:
-I have integrated only proxy inside the code for prototype, will integrate the proxies files later.
-Your location must be where the scrapy.cfg file is located to run the code..... 
-For changing the directory you must use (cd yellowpages) 
-While running the command must use the paramaters of what and where it's detail is below
 
----
+# 🟡 YellowPages.ca Business Listings Scraper (Canada)
 
-## ✅ `README.md`
-
-```markdown
-# YellowPages Scraper (Scrapy Project)
-
-This project is a Scrapy spider designed to scrape business listings from [YellowPages.ca](https://www.yellowpages.ca), using proxy support and configurable search queries (`what` and `where`).
+A **Scrapy**-based spider to scrape business listings from [YellowPages.ca](https://www.yellowpages.ca/). This scraper supports **proxy rotation**, **pagination**, **category filtering**, **deduplication**, and customizable output and summary reporting.
 
 ---
 
 ## 📁 Project Structure
 
 ```
-
-yellowpages/
-├── scrapy.cfg
-├── requirements.txt
-├── README.md
-├── venv/               
-├── yellowpages/
-│   ├── **init**.py
-│   ├── items.py
-│   ├── middlewares.py
-│   ├── pipelines.py
-│   ├── settings.py
-│   └── spiders/
-│       └── yp.py
-
-````
-
----
-
-## 🧰 Prerequisites
-
-- Python 3.10 or higher
-- `pip` (Python package manager)
-- `git` (optional, for version control)
-
----
-
-## 🐍 1. Create & Activate a Virtual Environment
-
-### Linux / macOS
-
-```bash
-python3 -m venv venv
-source venv/bin/activate
-````
-
-### Windows
-
-```bash
-python -m venv venv
-venv\Scripts\activate
+Scraper/
+│
+├── Scrapers/
+│   ├── spiders/
+│   │   └── yellowpages_canada.py       # Main spider file for scraping YP Canada
+│   ├── exporters.py                    # Custom exporter for UTF-8-SIG encoded CSV
+│   ├── settings.py                     # Scrapy settings (proxy, retry, etc.)
+│
+├── proxies.json                        # Proxy list (IP:Port or IP:Port:User:Pass)
+├── what.xlsx                           # Search keywords (e.g., "Plumber", "Dentist")
+├── where.xlsx                          # Search locations (e.g., "Toronto", "Vancouver")
+└── scrapy.cfg                          # Scrapy configuration file
+└── imp_data/
+    └── YP_Canada/
+        └── output/
+            └── [dir_name]/
+                ├── [output_file].csv   # Scraped results
+                └── [summary].json      # Run summary JSON file
 ```
 
 ---
 
-## 📦 2. Install Dependencies
+## ▶️ How to Run the Spider
 
-Install all required Python packages using `requirements.txt`:
+Navigate to the project root and run the spider with required arguments:
 
 ```bash
-pip install -r requirements.txt
+scrapy crawl yellowpages_canada \
+  -a what=what.xlsx \
+  -a where=where.xlsx \
+  -a dir_name=SOLAR \
+  -a output_file=yp_canada_solar_ON.csv \
+  -a summary=yp_canada_solar_ON.json \
+  -a source=ON-Solar \
+  -a category_matching=yes
 ```
+
+### ✅ Required Arguments
+
+| Argument      | Description                                                                         |
+| ------------- | ----------------------------------------------------------------------------------- |
+| `what`        | Path to Excel file (`.xlsx`) with a `what` column (business types, e.g., "Plumber") |
+| `where`       | Path to Excel file (`.xlsx`) with a `where` column (locations, e.g., "Toronto")     |
+| `dir_name`    | Folder name inside `imp_data/YP_Canada/output/` where outputs will be saved         |
+| `output_file` | Output CSV file name (must end with `.csv`)                                         |
+
+### 🔁 Optional Arguments
+
+| Argument            | Description                                                                                          |
+| ------------------- | ---------------------------------------------------------------------------------------------------- |
+| `summary`           | Output filename for JSON summary report (default: `summary.json`)                                    |
+| `source`            | Source tag for labeling the dataset (e.g., project or campaign name)                                 |
+| `category_matching` | Set to `yes` to **exclude** listings whose categories don't match the `what` keyword (default: `no`) |
+
+> **Note:** Output files are automatically saved to:
+> `imp_data/YP_Canada/output/[dir_name]/[output_file].csv`
+> Summary will be saved as:
+> `imp_data/YP_Canada/output/[dir_name]/[summary].json`
 
 ---
 
-## 🕷️ 3. Run the YellowPages Spider
+## ✨ Key Features
 
-To start scraping, run:
+### ✅ Proxy Rotation
 
-```bash
-scrapy crawl yellowpages -a what='YOUR_SEARCH_TERM' -a where='YOUR_LOCATION'
-```
+Reads proxies from `proxies.json` and rotates them on request failures. Supports both IP-only and authenticated proxies:
 
-### Example:
+* `IP:PORT`
+* `IP:PORT:USER:PASS`
 
-```bash
-scrapy crawl yellowpages -a what='plumber' -a where='Toronto ON'
-```
+### ✅ Excel Input Parsing
 
-> Both `what` and `where` are required arguments.
+Supports `.xlsx` input files for both `what` and `where`, extracting data from columns named exactly:
 
----
+* `what`
+* `where`
 
-## 🌐 4. Proxy Configuration
+### ✅ Pagination Support
 
-This spider uses a proxy by default. The proxy is configured in the spider file itself:
+Follows "Next" page links to scrape all results for each search term and location.
 
-```python
-proxy_host = "23.95.150.145"
-proxy_port = "6114"
-proxy_user = "nhjbaddy"
-proxy_password = "zmkmfl18hq36"
-```
+### ✅ Deduplication
 
-To change these, modify the `yp.py` spider directly.
+Skips duplicate listings based on unique `listing_id`, `URL`, or fallback `name_phone` combination.
 
----
+### ✅ Category Matching
 
-## 📤 5. Exporting Output (Optional)
+If `category_matching` is set to `yes`, only listings whose categories match the search term (`what`) will be included.
 
-You can export the scraped data to a file using the `-o` flag:
+### ✅ Profile Enrichment
 
-### JSON
+Fetches individual business profile pages for:
 
-```bash
-scrapy crawl yellowpages -a what='dentist' -a where='Vancouver BC' -o output.json
-```
+* Phone numbers (primary and additional)
+* Website (if available)
+* Address (split into components)
+* Categories
+* Additional metadata (e.g., “Sponsored” flag)
 
-### CSV
+### ✅ Summary Report
 
-```bash
-scrapy crawl yellowpages -a what='dentist' -a where='Vancouver BC' -o output.csv
-```
+After the spider finishes, a summary JSON file is generated containing:
 
----
-
-## 🚫 6. Exit Virtual Environment (When Done)
-
-```bash
-exit
-```
+* Total and unique listings
+* Errors and excluded records
+* Runtime statistics (start/end times, duration)
+* Input combinations
+* Output paths
 
 ---
 
-## 🛠️ 7. Troubleshooting
+## 📦 Output Format
 
-* Make sure your internet connection is stable.
-* Ensure `what` and `where` are properly quoted if they include spaces.
+Output is saved as a **UTF-8 CSV file**.
 
+| Field Name       | Description                                                 |
+| ---------------- | ----------------------------------------------------------- |
+| `listing_id`     | YellowPages internal listing ID                             |
+| `company`        | Business name                                               |
+| `phone`          | Primary phone number                                        |
+| `all_phones`     | Comma-separated list of all phone numbers                   |
+| `email`          | Email address (if available via structured data)            |
+| `website`        | Business website URL                                        |
+| `address`        | Street address                                              |
+| `city`           | City                                                        |
+| `state`          | Province or state                                           |
+| `postal_code`    | Postal code                                                 |
+| `full_address`   | Full formatted address (as seen on the page)                |
+| `country`        | Country code (always `CA` for Canada)                       |
+| `what`           | Search keyword used for this entry                          |
+| `where`          | Location used for this entry                                |
+| `scraper_source` | Name of the spider (`yellowpages_canada`)                   |
+| `source_url`     | Direct link to the business listing                         |
+| `note`           | Additional info (e.g., “Sponsored” listings)                |
+| `category`       | Comma-separated list of categories assigned to the business |
+| `source`         | User-defined source value passed via `-a source=...`        |
 
-## 7. Added the file logic
+---
 
-I have added the file for input data , What and where values are added. For running the files the input is 
+## 🛠 Troubleshooting
 
-```bash
-scrapy crawl yellowpages -a input_file=input.xlsx -o output2.csv 
-```
+* Ensure `proxies.json`, `what.xlsx`, and `where.xlsx` are in the project root.
+* Input files **must** include `what` and `where` columns.
+* Use `--logfile run.log` to save logs for debugging.
+* Make sure the output directory and filenames use valid characters only (alphanumeric, `-`, `_`, `.`).
+* If running into issues with proxy rotation, check the proxies file format.
 
-## 8. Saving the logs
+---
 
-If you want to save the logs, Use this prompt
-
-```bash
-scrapy crawl yellowpages -a input_file=input.xlsx -o output.csv --logfile output.log
-```
-
-## 9. Extra things
-
-I have use the Fingerprint logic and Retry Logic in settings.py. Also for saving the encoding = "utf-8-sig" by making the exporters.py and calling it in settings.py
-
-## 10. Adding Proxies 
-
-So I have made the logic for proxies in a code, i.e when the code is run it will take the first one proxy and run through it, when some error like status code other than 200 will come it will start shifting to next proxy and start requesting.
-
-## 11. Summary Logic 
-
-when ever the code is executed it will make the summary file in json format by it's own so to make the summary file with your desired name just add this in prompt
-
-```bash
-scrapy crawl yellowpages -a what=what.xlsx -a where=where.xlsx -a summary_file=detail_output_summary.json -o detail_output.csv  --logfile detail_output.log
-```
-Now in above promt user will be getting the summary file, log file and output file 
