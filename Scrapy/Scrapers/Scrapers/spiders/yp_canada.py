@@ -1,23 +1,20 @@
-# Scrapers/spiders/yp.py
+# Scrapers/spiders/yp_canada.py
 import os
 import re
 import json
 import base64
-import pandas as pd
+from itertools import product
 from urllib.parse import urljoin, urlparse, parse_qs, unquote
 from datetime import datetime
+import boto3
+import pandas as pd
 import scrapy
 from scrapy import Request
+from Scrapers import settings
 
 
-class YellowpagesSpider(scrapy.Spider):
-    """
-    Yellowpages Canada spider (cleaned).
-    Responsibilities:
-      - Read what/where inputs
-      - Build requests and parse listing results
-      - Yield items (CSV pipeline handles persistence & summary)
-    """
+
+class YellowpagesCanadaSpider(scrapy.Spider):
     name = "yellowpages_canada"
     allowed_domains = ["yellowpages.ca"]
     BASE = "https://www.yellowpages.ca"
@@ -28,17 +25,30 @@ class YellowpagesSpider(scrapy.Spider):
 
     @classmethod
     def from_crawler(cls, crawler, *args, **kwargs):
-        # Let Scrapy create the spider (this calls __init__ first)
         spider = super().from_crawler(crawler, *args, **kwargs)
-
-        # Attach crawler reference now (safe)
         spider.crawler = crawler
 
-        # Disable feed exports (pipeline handles output)
         crawler.settings.set('FEEDS', {}, priority='spider')
         crawler.settings.set('FEED_EXPORT_ENABLED', False, priority='spider')
 
+        spider.s3_bucket = crawler.settings.get("S3_BUCKET")
+        spider.s3_region = crawler.settings.get("S3_REGION")
+
+        if kwargs.get("save_to_s3", "no").lower() == "yes":
+            spider.save_to_s3 = True
+            if not spider.s3_bucket or not spider.s3_region:
+                raise ValueError("Missing S3_BUCKET or S3_REGION in settings.py or spider arguments.")
+        else:
+            spider.save_to_s3 = False
+
+        # ✅ Now log after everything is initialized
+        if spider.save_to_s3:
+            spider.logger.info(f"Output will be saved to S3: s3://{spider.s3_bucket}/{spider.s3_key}")
+        else:
+            spider.logger.info(f"Output file will be saved locally to: {spider.output_file}")
+
         return spider
+
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -73,12 +83,7 @@ class YellowpagesSpider(scrapy.Spider):
         os.makedirs(self.output_dir, exist_ok=True)
         self.output_file = os.path.join(self.output_dir, output_file)
         self.summary_file = os.path.join(self.output_dir, kwargs.get("summary", "summary.json"))
-
-        # S3 flags & preliminary values (do NOT access crawler.settings here)
-        self.save_to_s3 = kwargs.get("save_to_s3", "no").lower() == "yes"
-        # Accept s3_bucket/s3_region from CLI if provided; pipeline will fill defaults if None
-        self.s3_bucket = kwargs.get("s3_bucket", None)
-        self.s3_region = kwargs.get("s3_region", None)
+        # prepare S3 keys like yp_us (use forward slashes)
         self.s3_key = self.output_file.replace(os.sep, "/")
         self.s3_summary_key = self.summary_file.replace(os.sep, "/")
 
@@ -90,9 +95,17 @@ class YellowpagesSpider(scrapy.Spider):
         if not self.where_list:
             raise ValueError(f"No entries loaded from where file: {where_file}")
 
-        # load proxies if provided (expect -a proxy_file=path.json)
-        proxy_file = kwargs.get("proxy_file", None)
-        self.proxy_list = self.load_proxies(proxy_file) if proxy_file else []
+        # Set root dir to current working directory (where you run Scrapy)
+        self.root_dir = os.getcwd()
+
+        # Load proxies.json from root (where scrapy.cfg and proxies.json exist)
+        proxy_file = os.path.join(self.root_dir, "proxies.json")
+        if os.path.exists(proxy_file):
+            self.proxy_list = self.load_proxies(proxy_file)
+            self.logger.info(f"Loaded {len(self.proxy_list)} proxies from {proxy_file}")
+        else:
+            self.proxy_list = []
+            self.logger.warning("No proxy file found at: %s — continuing without proxies", proxy_file)
 
         # Initialize runtime state
         self.current_proxy_index = 0
@@ -105,12 +118,6 @@ class YellowpagesSpider(scrapy.Spider):
         self.errors = 0
         self.run_id = f"{self.name}-{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}"
         self.start_time = datetime.utcnow()
-
-        # Log output destination (note: bucket may be filled later in pipeline)
-        if self.save_to_s3:
-            self.logger.info(f"Output will be saved to S3: s3://{self.s3_bucket}/{self.s3_key}")
-        else:
-            self.logger.info(f"Output file will be saved locally to: {self.output_file}")
 
     # ---------- helpers ----------
     def load_inputs(self, filepath):
@@ -339,12 +346,58 @@ class YellowpagesSpider(scrapy.Spider):
         if next_page:
             yield from self.make_request(urljoin(self.BASE, next_page), response.meta)
 
-    # ---------- cleanup (no file writes here; pipeline writes summary) ----------
+    # ---------- cleanup (summary) ----------
     def closed(self, reason):
-        end_time = datetime.utcnow()
-        elapsed = end_time - self.start_time
-        unique_count = len(self.seen_listing_ids)
-        self.logger.info(
-            "Scrape finished: reason=%s, run_id=%s, unique=%d, scraped=%d, duplicates=%d, excluded=%d, elapsed=%s",
-            reason, self.run_id, unique_count, self.total_items_scraped, self.duplicate_items, self.excluded_items, str(elapsed)
-        )
+        if reason == "finished":
+            end_time = datetime.utcnow()
+            elapsed = end_time - self.start_time
+
+            # Make summary similar to yp_us
+            what_where_combinations = list(product(self.what_list, self.where_list))
+
+            summary_data = {
+                "run_id": self.run_id,
+                "scraper_name": self.name,
+                "source": self.source,
+                "where_inputs": sorted(set(self.where_list)),
+                "what_inputs": sorted(set(self.what_list)),
+                "category_matching": self.category_matching,
+                "start_time_utc": self.start_time.strftime("%Y-%m-%d %H:%M:%S"),
+                "end_time_utc": end_time.strftime("%Y-%m-%d %H:%M:%S"),
+                "elapsed_seconds": int(elapsed.total_seconds()),
+                "elapsed_minutes": int(elapsed.total_seconds() // 60),
+                "total_encountered": len(self.seen_listing_ids) + int(self.duplicate_items // 2 - len(self.seen_listing_ids)),
+                "unique_items": len(self.seen_listing_ids),
+                "duplicate_items": int(self.duplicate_items // 2 - len(self.seen_listing_ids)),
+                "errors": self.errors,
+                "excluded_record_count": self.excluded_items,
+                "saved_items": max(0, len(self.seen_listing_ids) - self.excluded_items),
+                "output_file": f"s3://{self.s3_bucket}/{self.s3_key}" if self.save_to_s3 else self.output_file,
+                "summary_file": f"s3://{self.s3_bucket}/{self.s3_summary_key}" if self.save_to_s3 else self.summary_file,
+                "notes": reason,
+            }
+
+
+            if self.save_to_s3:
+                public_output_url = f"https://{self.s3_bucket}.s3.{self.s3_region}.amazonaws.com/{self.s3_key}"
+                public_summary_url = f"https://{self.s3_bucket}.s3.{self.s3_region}.amazonaws.com/{self.s3_summary_key}"
+                summary_data["output_file"] = f"s3://{self.s3_bucket}/{self.s3_key}"
+                summary_data["summary_file"] = f"s3://{self.s3_bucket}/{self.s3_summary_key}"
+                summary_data["output_url"] = public_output_url
+                summary_data["summary_url"] = public_summary_url
+                summary_data["notes"] = reason
+
+                s3_client = boto3.client("s3", region_name=self.s3_region)
+                s3_client.put_object(
+                    Bucket=self.s3_bucket,
+                    Key=self.s3_summary_key,
+                    Body=json.dumps(summary_data, indent=2, ensure_ascii=False).encode("utf-8-sig"),
+                    ACL="public-read",
+                    ContentType="application/json; charset=utf-8",
+                )
+            else:
+                os.makedirs(os.path.dirname(self.summary_file), exist_ok=True)
+                with open(self.summary_file, "w", encoding="utf-8-sig") as f:
+                    json.dump(summary_data, f, indent=2, ensure_ascii=False)
+
+            self.logger.info("Summary saved: %s", summary_data.get("summary_file"))
